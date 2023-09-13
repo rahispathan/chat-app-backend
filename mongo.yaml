@@ -1,0 +1,76 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mongo
+spec:
+  serviceName: "mongo"
+  replicas: 1
+template:
+  metadata:
+    labels:
+      app: mongo
+  spec:
+    containers:
+    - name: my-mongodb-pod
+      image: mongo:4.4.3
+      env:
+        - name: MONGO_INITDB_ROOT_USERNAME
+          value: "mongo"
+        - name: MONGO_INITDB_ROOT_PASSWORD
+          value: "mongo123"
+        - name: MONGO_REPLICA_SET
+          value: "myReplicaSet"
+        - name: MONGO_PORT
+          value: "27017"
+      # Note, to disable non-auth in mongodb is kind of complicated[4]
+      # Note, the `_getEnv` function is internal and undocumented[3].
+      #
+      # 1. https://gist.github.com/thilinapiy/0c5abc2c0c28efe1bbe2165b0d8dc115
+      # 2. https://stackoverflow.com/a/54726708/2768067
+      # 3. https://stackoverflow.com/a/67037065/2768067
+      # 4. https://www.mongodb.com/features/mongodb-authentication
+      command:
+        - /bin/sh
+        - -c
+        - >
+          set -x # print command been ran
+          set -e # fail if any command fails
+
+          env;
+          ps auxwww;
+
+          printf "\n\t mongod:: start in the background \n\n";
+          mongod \
+            --port="${MONGO_PORT}" \
+            --bind_ip_all \
+            --replSet="${MONGO_REPLICA_SET}" \
+            --quiet > /tmp/mongo.log.json 2>&1 &
+
+          sleep 9;
+          ps auxwww;
+
+          printf "\n\t mongod: set master \n\n";
+          mongo --port "${MONGO_PORT}" --eval '
+            rs.initiate({});
+            sleep(3000);';
+
+          printf "\n\t mongod: add user \n\n";
+          mongo --port "${MONGO_PORT}" --eval '
+            db.getSiblingDB("admin").createUser({
+              user: _getEnv("MONGO_INITDB_ROOT_USERNAME"), 
+              pwd: _getEnv("MONGO_INITDB_ROOT_PASSWORD"), 
+              roles: [{ role: "userAdminAnyDatabase", db: "admin" }]
+            });';
+
+          printf "\n\t mongod: shutdown \n\n";
+          mongod --shutdown;
+          sleep 3;
+          ps auxwww;
+
+          printf "\n\t mongod: restart with authentication \n\n";
+          mongod \
+            --auth \
+            --port="${MONGO_PORT}" \
+            --bind_ip_all \
+            --replSet="${MONGO_REPLICA_SET}" \
+            --verbose=v
